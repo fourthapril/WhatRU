@@ -1,0 +1,40 @@
+name: whatru
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  app_settings: ^7.0.0
+  cloud_firestore: ^6.2.0
+  file_picker: ^10.3.10
+  firebase_auth: ^6.3.0
+  firebase_core: ^4.6.0
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.5.5
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.4.0
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+
+flutter_native_splash:
+  color: "#080B0E" 
+  image: "assets/icon/app_icon.png" 
+  android_12:
+    image: "assets/icon/app_icon.png"
+    color: "#080B0E"

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "698859664357",
+    "project_id": "whatru-security",
+    "storage_bucket": "whatru-security.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:698859664357:android:0bf2574d2d47d53967350c",
+        "android_client_info": {
+          "package_name": "com.example.whatru"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCoy5Ow3oZbnY_map7dOV9DHDD8F7ztPLA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
