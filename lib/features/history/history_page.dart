@@ -1,30 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/widgets/custom_header.dart';
-import '../../core/routes/app_routes.dart';
-
-// --- โมเดลสำหรับจัดการข้อมูลประวัติการสแกน ---
-class HistoryItem {
-  final String title;
-  final DateTime date;
-  final double sizeMb;
-  final int score;
-
-  HistoryItem(this.title, this.date, this.sizeMb, this.score);
-
-  // กำหนดสีของรายการตามระดับคะแนนความปลอดภัย
-  Color get color {
-    if (score >= 60) return const Color(0xFF00FFB2); 
-    if (score >= 30) return Colors.amber; 
-    return const Color(0xFFFF4B6C); 
-  }
-
-  // กำหนดป้ายกำกับสถานะตามระดับคะแนนความปลอดภัย
-  String get status {
-    if (score >= 60) return 'Safe';
-    if (score >= 30) return 'Warning';
-    return 'Threat';
-  }
-}
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -34,69 +11,96 @@ class HistoryPage extends StatefulWidget {
 }
 
 class _HistoryPageState extends State<HistoryPage> {
-  // ข้อมูลจำลองทั้งหมดในระบบ
-  final List<HistoryItem> _allItems = [
-    HistoryItem('Document_2024.pdf', DateTime(2026, 4, 12, 14, 30), 6.7, 95),
-    HistoryItem('Setup_v2.exe', DateTime(2026, 4, 12, 10, 15), 34.2, 15),
-    HistoryItem('Photo_backup.zip', DateTime(2026, 4, 11, 20, 0), 340.0, 100),
-    HistoryItem('Unknown_Script.bat', DateTime(2026, 4, 10, 9, 45), 1.2, 45),
-    HistoryItem('Project_Final.docx', DateTime(2026, 4, 8, 16, 20), 4.1, 85),
-    HistoryItem('crack_tool.rar', DateTime(2026, 3, 25, 23, 10), 17.5, 20),
-    HistoryItem('Presentation.pptx', DateTime(2026, 3, 20, 11, 5), 12.8, 90),
-  ];
 
-  // รายการที่ผ่านการกรองและพร้อมแสดงผล
-  List<HistoryItem> _filteredItems = [];
+  // ── สถานะตัวกรอง ──
+  String _selectedSort   = 'Newest'; // Newest, Oldest, Largest, Smallest
+  String _selectedStatus = 'All';    // All, Safe, Warning, Threat
 
-  // ตัวแปรสำหรับจัดเก็บเงื่อนไขการกรองและการเรียงลำดับ
-  String _selectedSort = 'Newest'; // Newest, Oldest, Largest, Smallest
-  String _selectedStatus = 'All'; // All, Safe, Warning, Threat
-
-  @override
-  void initState() {
-    super.initState();
-    _applyFilter(); // เริ่มต้นโหลดและประมวลผลข้อมูล
+  // ── แปลง Timestamp จาก Firestore เป็นข้อความอ่านง่าย ──
+  String _formatDateTime(Timestamp? timestamp) {
+    if (timestamp == null) return '';
+    final d = timestamp.toDate();
+    const months = [
+      'Jan','Feb','Mar','Apr','May','Jun',
+      'Jul','Aug','Sep','Oct','Nov','Dec'
+    ];
+    final hour   = d.hour.toString().padLeft(2, '0');
+    final minute = d.minute.toString().padLeft(2, '0');
+    return '${d.day} ${months[d.month - 1]} ${d.year}, $hour:$minute';
   }
 
-  // ฟังก์ชันสำหรับการจัดเรียงและคัดกรองข้อมูล
-  void _applyFilter() {
-    List<HistoryItem> temp = List.from(_allItems);
+  // ── Score → color ──
+  Color _scoreColor(int score) {
+    if (score >= 80) return const Color(0xFF00FFB2);
+    if (score >= 50) return Colors.amber;
+    return const Color(0xFFFF4B6C);
+  }
 
-    // 1. คัดกรองตามสถานะความปลอดภัย
-    if (_selectedStatus != 'All') {
-      temp.retainWhere((item) => item.status == _selectedStatus);
+  // ── File type → icon ──
+  IconData _fileIcon(String? fileType) {
+    switch (fileType) {
+      case 'PDF':  return Icons.picture_as_pdf;
+      case 'EXE':
+      case 'ELF':  return Icons.terminal;
+      case 'ZIP':  return Icons.folder_zip;
+      case 'JPG':
+      case 'PNG':  return Icons.image;
+      case 'MP4':  return Icons.movie;
+      case 'TEXT': return Icons.code;
+      default:     return Icons.insert_drive_file;
     }
+  }
 
-    // 2. จัดเรียงตามเงื่อนไขที่ผู้ใช้เลือก
-    if (_selectedSort == 'Newest') {
-      temp.sort((a, b) => b.date.compareTo(a.date)); 
-    } else if (_selectedSort == 'Oldest') {
-      temp.sort((a, b) => a.date.compareTo(b.date)); 
-    } else if (_selectedSort == 'Largest') {
-      temp.sort((a, b) => b.sizeMb.compareTo(a.sizeMb)); 
-    } else if (_selectedSort == 'Smallest') {
-      temp.sort((a, b) => a.sizeMb.compareTo(b.sizeMb)); 
-    }
+  // ── คำนวณการกรองและการจัดเรียงรายการ docs ──
+  List<QueryDocumentSnapshot> _applyFilter(
+    List<QueryDocumentSnapshot> docs,
+  ) {
+    // 1. กรองตามสถานะ
+    var filtered = docs.where((doc) {
+      final data = doc.data() as Map<String, dynamic>;
+      if (_selectedStatus == 'All') return true;
+      return (data['status'] ?? '') == _selectedStatus;
+    }).toList();
 
-    setState(() {
-      _filteredItems = temp;
+    // 2. จัดเรียง
+    filtered.sort((a, b) {
+      final da = a.data() as Map<String, dynamic>;
+      final db = b.data() as Map<String, dynamic>;
+
+      switch (_selectedSort) {
+        case 'Newest':
+          final ta = (da['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
+          final tb = (db['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
+          return tb.compareTo(ta);
+        case 'Oldest':
+          final ta = (da['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
+          final tb = (db['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
+          return ta.compareTo(tb);
+        case 'Largest':
+          // fileSize เก็บเป็น "34.20 KB" — แปลงตัวเลข
+          final sa = double.tryParse(
+                (da['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
+          final sb = double.tryParse(
+                (db['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
+          return sb.compareTo(sa);
+        case 'Smallest':
+          final sa = double.tryParse(
+                (da['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
+          final sb = double.tryParse(
+                (db['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
+          return sa.compareTo(sb);
+        default:
+          return 0;
+      }
     });
-  }
 
-  // ฟังก์ชันสำหรับจัดรูปแบบวันที่และเวลา
-  String _formatDateTime(DateTime d) {
-    List<String> months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    String day = d.day.toString();
-    String month = months[d.month - 1];
-    String year = d.year.toString();
-    String hour = d.hour.toString().padLeft(2, '0');
-    String minute = d.minute.toString().padLeft(2, '0');
-    
-    return '$day $month $year, $hour:$minute';
+    return filtered;
   }
 
   @override
   Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+
     return SafeArea(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -105,40 +109,98 @@ class _HistoryPageState extends State<HistoryPage> {
             padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             child: CustomHeader(),
           ),
+
+          // ── Header row ──
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 20, vertical: 10),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('History', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+                const Text(
+                  'History',
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white),
+                ),
                 ElevatedButton.icon(
                   onPressed: () => _showFilterBottomSheet(context),
-                  icon: const Icon(Icons.filter_list, size: 16, color: Color(0xFF00FFB2)),
-                  label: const Text('Filter', style: TextStyle(color: Color(0xFF00FFB2))),
+                  icon: const Icon(Icons.filter_list,
+                      size: 16, color: Color(0xFF00FFB2)),
+                  label: const Text('Filter',
+                      style: TextStyle(color: Color(0xFF00FFB2))),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF00FFB2).withOpacity(0.1),
+                    backgroundColor:
+                        const Color(0xFF00FFB2).withOpacity(0.1),
                     elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
               ],
             ),
           ),
-          
-          // พื้นที่แสดงผลรายการ
+
+          // ── List ──
           Expanded(
-            child: _filteredItems.isEmpty
-                ? const Center(child: Text('No files match your filter.', style: TextStyle(color: Colors.grey)))
-                : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    itemCount: _filteredItems.length + 1, // เพิ่มพื้นที่ว่างด้านล่าง
-                    itemBuilder: (context, index) {
-                      if (index == _filteredItems.length) {
-                        return const SizedBox(height: 80); 
+            child: user == null
+                ? _buildGuestState()
+                : StreamBuilder<QuerySnapshot>(
+                    stream: FirebaseFirestore.instance
+                        .collection('users')
+                        .doc(user.uid)
+                        .collection('scanHistory')
+                        .orderBy('scannedAt', descending: true)
+                        .snapshots(),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState ==
+                          ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(
+                              color: Color(0xFF00FFB2)),
+                        );
                       }
-                      final item = _filteredItems[index];
-                      String subtitle = '${_formatDateTime(item.date)}  ·  ${item.sizeMb} MB';
-                      return _buildHistoryItem(context, item.title, subtitle, item.score, item.color, item.status);
+
+                      if (snapshot.hasError) {
+                        return const Center(
+                          child: Text('Error loading history.',
+                              style: TextStyle(color: Colors.grey)),
+                        );
+                      }
+
+                      final allDocs =
+                          snapshot.data?.docs ?? [];
+
+                      if (allDocs.isEmpty) {
+                        return _buildEmptyState();
+                      }
+
+                      // นำการจัดเรียงและกรองไปใช้
+                      final filtered = _applyFilter(allDocs);
+
+                      if (filtered.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'No files match your filter.',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        );
+                      }
+
+                      return ListView.builder(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20),
+                        itemCount: filtered.length + 1,
+                        itemBuilder: (context, index) {
+                          if (index == filtered.length) {
+                            return const SizedBox(height: 80);
+                          }
+                          final data = filtered[index].data()
+                              as Map<String, dynamic>;
+                          return _buildHistoryItem(data);
+                        },
+                      );
                     },
                   ),
           ),
@@ -147,85 +209,255 @@ class _HistoryPageState extends State<HistoryPage> {
     );
   }
 
-  // ส่วนการแสดงผล Bottom Sheet สำหรับตัวกรองข้อมูล
+  // ── Empty state ──
+  Widget _buildEmptyState() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.history, color: Colors.grey, size: 48),
+          SizedBox(height: 16),
+          Text(
+            'No scans yet',
+            style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16),
+          ),
+          SizedBox(height: 8),
+          Text(
+            'Scan a file to see your history here.',
+            style: TextStyle(color: Colors.grey, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Guest state ──
+  Widget _buildGuestState() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.lock_outline, color: Colors.grey, size: 48),
+          SizedBox(height: 16),
+          Text(
+            'Log in to see your history',
+            style: TextStyle(color: Colors.grey, fontSize: 14),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Single history item ──
+  Widget _buildHistoryItem(Map<String, dynamic> data) {
+    final String fileName  = data['fileName']  ?? 'Unknown File';
+    final String fileSize  = data['fileSize']  ?? '';
+    final int    score     = data['score']     ?? 0;
+    final String status    = data['status']    ?? 'Unknown';
+    final String fileType  = data['fileType']  ?? '';
+    final bool   isDeepScan = data['isDeepScan'] ?? false;
+    final Timestamp? scannedAt = data['scannedAt'] as Timestamp?;
+
+    final color = _scoreColor(score);
+    final subtitle =
+        '${_formatDateTime(scannedAt)}  ·  $fileSize';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF161B22),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.1)),
+      ),
+      child: Row(
+        children: [
+          // ไอคอนไฟล์
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(_fileIcon(fileType), color: color),
+          ),
+          const SizedBox(width: 16),
+
+          // ชื่อไฟล์ + วันที่
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  fileName,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: Colors.white),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                      color: Colors.grey, fontSize: 11),
+                ),
+                // แสดงแบดจ์ Deep scan
+                if (isDeepScan) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF00FFB2).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'DEEP SCAN',
+                      style: TextStyle(
+                          color: Color(0xFF00FFB2),
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+
+          // คะแนนและสถานะ
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                score.toString(),
+                style: TextStyle(
+                    color: color,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold),
+              ),
+              Text(
+                status.toUpperCase(),
+                style: TextStyle(
+                    color: color.withOpacity(0.8),
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Filter bottom sheet ──
   void _showFilterBottomSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true, // อนุญาตให้ขยายความสูงได้เต็มหน้าจอ
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF131F1D),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      shape: const RoundedRectangleBorder(
+          borderRadius:
+              BorderRadius.vertical(top: Radius.circular(24))),
       builder: (context) {
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setModalState) {
-            
-            // ใช้ SingleChildScrollView เพื่อรองรับหน้าจอขนาดเล็ก
-            return SingleChildScrollView( 
+            return SingleChildScrollView(
               child: Container(
                 padding: EdgeInsets.only(
                   top: 24,
                   left: 24,
                   right: 24,
-                  // คำนวณระยะขอบล่างป้องกันการทับซ้อนกับ Navigation Bar
-                  bottom: 24 + MediaQuery.of(context).padding.bottom, 
+                  bottom: 24 + MediaQuery.of(context).padding.bottom,
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Center(
-                      child: Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey, borderRadius: BorderRadius.all(Radius.circular(2)))),
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.grey,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 20),
-                    const Text('Sort & Filter', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const Text(
+                      'Sort & Filter',
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white),
+                    ),
                     const SizedBox(height: 24),
 
-                    // ตัวเลือกการเรียงลำดับ (Sort By)
-                    const Text('Sort By', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                    // จัดเรียงตาม
+                    const Text('Sort By',
+                        style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold)),
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
                       children: [
-                        _buildChip('Newest', _selectedSort, (val) => setModalState(() => _selectedSort = val)),
-                        _buildChip('Oldest', _selectedSort, (val) => setModalState(() => _selectedSort = val)),
-                        _buildChip('Largest', _selectedSort, (val) => setModalState(() => _selectedSort = val)),
-                        _buildChip('Smallest', _selectedSort, (val) => setModalState(() => _selectedSort = val)),
+                        _buildChip('Newest',   _selectedSort,   (v) => setModalState(() => _selectedSort   = v)),
+                        _buildChip('Oldest',   _selectedSort,   (v) => setModalState(() => _selectedSort   = v)),
+                        _buildChip('Largest',  _selectedSort,   (v) => setModalState(() => _selectedSort   = v)),
+                        _buildChip('Smallest', _selectedSort,   (v) => setModalState(() => _selectedSort   = v)),
                       ],
                     ),
                     const SizedBox(height: 24),
 
-                    // ตัวเลือกการกรองตามสถานะ (Filter By Status)
-                    const Text('Filter By Status', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                    // กรองตามสถานะ
+                    const Text('Filter By Status',
+                        style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold)),
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
                       children: [
-                        _buildChip('All', _selectedStatus, (val) => setModalState(() => _selectedStatus = val)),
-                        _buildChip('Safe', _selectedStatus, (val) => setModalState(() => _selectedStatus = val), activeColor: const Color(0xFF00FFB2)),
-                        _buildChip('Warning', _selectedStatus, (val) => setModalState(() => _selectedStatus = val), activeColor: Colors.amber),
-                        _buildChip('Threat', _selectedStatus, (val) => setModalState(() => _selectedStatus = val), activeColor: const Color(0xFFFF4B6C)),
+                        _buildChip('All',     _selectedStatus, (v) => setModalState(() => _selectedStatus = v)),
+                        _buildChip('Safe',    _selectedStatus, (v) => setModalState(() => _selectedStatus = v), activeColor: const Color(0xFF00FFB2)),
+                        _buildChip('Warning', _selectedStatus, (v) => setModalState(() => _selectedStatus = v), activeColor: Colors.amber),
+                        _buildChip('Threat',  _selectedStatus, (v) => setModalState(() => _selectedStatus = v), activeColor: const Color(0xFFFF4B6C)),
                       ],
                     ),
                     const SizedBox(height: 32),
 
-                    // ปุ่มยืนยันการตั้งค่า
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
                         onPressed: () {
-                          _applyFilter(); 
-                          Navigator.pop(context); 
+                          setState(() {}); // เรียกให้แสดงผลใหม่เมื่อกรองเปลี่ยน
+                          Navigator.pop(context);
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF00FFB2),
                           foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 16),
+                          shape: RoundedRectangleBorder(
+                              borderRadius:
+                                  BorderRadius.circular(16)),
                         ),
-                        child: const Text('Apply Filters', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        child: const Text('Apply Filters',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16)),
                       ),
-                    )
+                    ),
                   ],
                 ),
               ),
@@ -236,70 +468,31 @@ class _HistoryPageState extends State<HistoryPage> {
     );
   }
 
-  // วิดเจ็ตสำหรับสร้างปุ่มตัวเลือกใน Filter
-  Widget _buildChip(String label, String selectedValue, Function(String) onSelected, {Color? activeColor}) {
-    bool isSelected = label == selectedValue;
-    Color color = activeColor ?? const Color(0xFF00FFB2);
-
+  Widget _buildChip(
+    String label,
+    String selectedValue,
+    Function(String) onSelected, {
+    Color? activeColor,
+  }) {
+    final bool isSelected = label == selectedValue;
+    final Color color = activeColor ?? const Color(0xFF00FFB2);
     return ChoiceChip(
       label: Text(label),
       selected: isSelected,
-      onSelected: (bool selected) {
+      onSelected: (selected) {
         if (selected) onSelected(label);
       },
       selectedColor: color.withOpacity(0.2),
       backgroundColor: const Color(0xFF161B22),
       labelStyle: TextStyle(
         color: isSelected ? color : Colors.grey,
-        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        fontWeight:
+            isSelected ? FontWeight.bold : FontWeight.normal,
       ),
       side: BorderSide(
-        color: isSelected ? color : Colors.transparent,
-      ),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-    );
-  }
-
-  // วิดเจ็ตสำหรับแสดงผลรายละเอียดประวัติการสแกนแต่ละรายการ
-  Widget _buildHistoryItem(BuildContext context, String title, String subtitle, int score, Color color, String statusLabel) {
-    return GestureDetector(
-      onTap: () => Navigator.pushNamed(context, AppRoutes.scanResult),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFF161B22),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withOpacity(0.1)),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
-              child: Icon(Icons.description_outlined, color: color),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white)),
-                  const SizedBox(height: 6),
-                  Text(subtitle, style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
-              ),
-            ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(score.toString(), style: TextStyle(color: color, fontSize: 20, fontWeight: FontWeight.bold)),
-                Text(statusLabel.toUpperCase(), style: TextStyle(color: color.withOpacity(0.8), fontSize: 9, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
-              ],
-            ),
-          ],
-        ),
-      ),
+          color: isSelected ? color : Colors.transparent),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12)),
     );
   }
 }
