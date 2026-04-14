@@ -42,7 +42,7 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
     super.dispose();
   }
 
-  // ลอจิกการตรวจสอบความถูกต้องของข้อมูล (Validation)
+  // ลอจิกการตรวจสอบความถูกต้องของข้อมูล
   bool get _isUserNameValid => _userNameController.text.isNotEmpty;
   bool get _isEmailValid => _emailController.text.contains('@gmail.com');
   bool get _isPasswordValid => _passwordController.text.isNotEmpty;
