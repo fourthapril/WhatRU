@@ -3,6 +3,7 @@ import '../../core/routes/app_routes.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+// หน้าจอการสมัครสมาชิกสำหรับเลือกแพ็กเกจ WHATRU PRO
 class SubscriptionPage extends StatefulWidget {
   const SubscriptionPage({super.key});
 
@@ -36,6 +37,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
 
   @override
   Widget build(BuildContext context) {
+    // สร้างเลย์เอาต์หลักของหน้า subscription
     return Scaffold(
       backgroundColor: const Color(0xFF080B0E),
       body: Stack(
@@ -128,6 +130,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                       ],
                     ),
                   ),
+                  // ข้อความโปรโมชันและคำอธิบายหลักของหน้าสมัครสมาชิก
                   const SizedBox(height: 12),
                   const Text(
                     'One plan. All features. Pick the billing period that works for you.',
@@ -135,7 +138,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                   ),
                   const SizedBox(height: 24),
 
-                  // ตัวบ่งชี้สถานะขั้นตอน (Progress Indicator)
+                  // ตัวบ่งชี้สถานะขั้นตอนของขั้นตอนสมัครสมาชิก
                   Row(
                     children: [
                       Container(
@@ -189,7 +192,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                   ),
                   const SizedBox(height: 32),
 
-                  // รายการฟีเจอร์
+                  // รายการฟีเจอร์ที่มากับแพ็กเกจ PRO
                   const Text(
                     'EVERYTHING INCLUDED',
                     style: TextStyle(
@@ -301,6 +304,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     );
   }
 
+  // สร้างการ์ดแนะนำแผนสมัครสมาชิกแต่ละตัวเลือก
   Widget _buildPlanCard(
     int index,
     String title,
@@ -435,6 +439,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     );
   }
 
+  // สร้างแถวแสดงคุณสมบัติพิเศษของแผนสมัครสมาชิก
   Widget _buildFeatureRow(
     String text,
     Color iconColor,
@@ -487,6 +492,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
     );
   }
 
+  // สร้างปุ่มยืนยันการเลือกแผนและจัดการการนำทาง
   Widget _buildSubmitButton() {
     bool hasSelected = _selectedPlan != -1;
     // ตรวจสอบสถานะการเข้าสู่ระบบ
