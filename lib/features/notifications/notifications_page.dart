@@ -303,10 +303,23 @@ class NotificationsPage extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        timeStr,
-                        style: const TextStyle(
-                            color: Colors.grey, fontSize: 11),
+
+                      // ปุ่ม X ลบการแจ้งเตือนที่มุมบนขวา
+                      GestureDetector(
+                        onTap: () => _deleteNotification(uid, docId),
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color:
+                                Colors.white.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Icon(
+                            Icons.close,
+                            size: 14,
+                            color: Colors.grey,
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -318,30 +331,30 @@ class NotificationsPage extends StatelessWidget {
                         fontSize: 12,
                         height: 1.4),
                   ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      if (isUnread) ...[
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                              color: Color(0xFF00FFB2),
+                              shape: BoxShape.circle),
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      Text(
+                        timeStr,
+                        style: const TextStyle(
+                            color: Colors.grey, fontSize: 11),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
-
-            const SizedBox(width: 8),
-            GestureDetector(
-              onTap: () => _deleteNotification(uid, docId),
-              child: const Padding(
-                padding: EdgeInsets.only(top: 2),
-                child: Icon(Icons.close,
-                    size: 16, color: Colors.grey),
-              ),
-            ),
-            if (isUnread) ...[
-              const SizedBox(width: 8),
-              Container(
-                margin: const EdgeInsets.only(top: 6),
-                width: 8,
-                height: 8,
-                decoration: const BoxDecoration(
-                    color: Color(0xFF00FFB2),
-                    shape: BoxShape.circle),
-              ),
-            ],
           ],
         ),
       ),
