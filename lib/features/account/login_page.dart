@@ -385,15 +385,15 @@ class _LoginPageState extends State<LoginPage> {
                                         (route) => false,
                                       );
                                     }
-                                  } on FirebaseAuthException catch (e) {
+                                  } on FirebaseAuthException catch (_) {
                                     if (context.mounted) {
                                       ScaffoldMessenger.of(
                                               context)
                                           .showSnackBar(
-                                        SnackBar(
+                                        const SnackBar(
                                           content: Text(
-                                              'Login failed: ${e.message}'),
-                                          backgroundColor:
+                                              'Login failed: email or password is incorrect'),
+                                            backgroundColor:
                                               const Color(
                                                   0xFFFF4B6C),
                                         ),
