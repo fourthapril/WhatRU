@@ -67,6 +67,33 @@ class NotificationsPage extends StatelessWidget {
     await batch.commit();
   }
 
+  // ── ลบการแจ้งเตือนทั้งหมดใน Firestore ──
+  Future<void> _clearAllNotifications(String uid) async {
+    final batch = FirebaseFirestore.instance.batch();
+    final all = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('notifications')
+        .get();
+
+    for (final doc in all.docs) {
+      batch.delete(doc.reference);
+    }
+    if (all.docs.isNotEmpty) {
+      await batch.commit();
+    }
+  }
+
+  // ── ลบการแจ้งเตือนเดียวจาก Firestore ──
+  Future<void> _deleteNotification(String uid, String docId) async {
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('notifications')
+        .doc(docId)
+        .delete();
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -95,6 +122,17 @@ class NotificationsPage extends StatelessWidget {
               onPressed: () => _markAllRead(user.uid),
               child: const Text(
                 'Mark read',
+                style: TextStyle(
+                    color: Color(0xFF00FFB2),
+                    fontWeight: FontWeight.bold),
+              ),
+            ),
+          // ปุ่มล้างการแจ้งเตือนทั้งหมด — แสดงเฉพาะเมื่อเข้าสู่ระบบ
+          if (user != null)
+            TextButton(
+              onPressed: () => _clearAllNotifications(user.uid),
+              child: const Text(
+                'Clear all',
                 style: TextStyle(
                     color: Color(0xFF00FFB2),
                     fontWeight: FontWeight.bold),
@@ -284,9 +322,17 @@ class NotificationsPage extends StatelessWidget {
               ),
             ),
 
-            // จุดสำหรับยังไม่อ่าน
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () => _deleteNotification(uid, docId),
+              child: const Padding(
+                padding: EdgeInsets.only(top: 2),
+                child: Icon(Icons.close,
+                    size: 16, color: Colors.grey),
+              ),
+            ),
             if (isUnread) ...[
-              const SizedBox(width: 12),
+              const SizedBox(width: 8),
               Container(
                 margin: const EdgeInsets.only(top: 6),
                 width: 8,
