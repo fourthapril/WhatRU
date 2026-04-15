@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/widgets/custom_header.dart';
+import '../../core/services/weekly_stats_service.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -12,11 +13,10 @@ class HistoryPage extends StatefulWidget {
 
 class _HistoryPageState extends State<HistoryPage> {
 
-  // ── สถานะตัวกรอง ──
-  String _selectedSort   = 'Newest'; // Newest, Oldest, Largest, Smallest
-  String _selectedStatus = 'All';    // All, Safe, Warning, Threat
+  String _selectedSort   = 'Newest';
+  String _selectedStatus = 'All';
 
-  // ── แปลง Timestamp จาก Firestore เป็นข้อความอ่านง่าย ──
+  // แปลง Timestamp เป็นข้อความวันที่แบบอ่านง่าย
   String _formatDateTime(Timestamp? timestamp) {
     if (timestamp == null) return '';
     final d = timestamp.toDate();
@@ -29,14 +29,14 @@ class _HistoryPageState extends State<HistoryPage> {
     return '${d.day} ${months[d.month - 1]} ${d.year}, $hour:$minute';
   }
 
-  // ── Score → color ──
+  // เลือกสีตาม score เพื่อแสดงสถานะความปลอดภัย
   Color _scoreColor(int score) {
     if (score >= 80) return const Color(0xFF00FFB2);
     if (score >= 50) return Colors.amber;
     return const Color(0xFFFF4B6C);
   }
 
-  // ── File type → icon ──
+  // คืน Icon ตามประเภทไฟล์ (fileType)
   IconData _fileIcon(String? fileType) {
     switch (fileType) {
       case 'PDF':  return Icons.picture_as_pdf;
@@ -51,43 +51,58 @@ class _HistoryPageState extends State<HistoryPage> {
     }
   }
 
-  // ── คำนวณการกรองและการจัดเรียงรายการ docs ──
+  // กรองประวัติการสแกนตาม status และเรียงตาม selected sort
   List<QueryDocumentSnapshot> _applyFilter(
-    List<QueryDocumentSnapshot> docs,
-  ) {
-    // 1. กรองตามสถานะ
+      List<QueryDocumentSnapshot> docs) {
     var filtered = docs.where((doc) {
       final data = doc.data() as Map<String, dynamic>;
       if (_selectedStatus == 'All') return true;
       return (data['status'] ?? '') == _selectedStatus;
     }).toList();
 
-    // 2. จัดเรียง
     filtered.sort((a, b) {
       final da = a.data() as Map<String, dynamic>;
       final db = b.data() as Map<String, dynamic>;
-
       switch (_selectedSort) {
         case 'Newest':
-          final ta = (da['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
-          final tb = (db['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
+          final ta = (da['scannedAt'] as Timestamp?)
+                  ?.toDate() ??
+              DateTime(0);
+          final tb = (db['scannedAt'] as Timestamp?)
+                  ?.toDate() ??
+              DateTime(0);
           return tb.compareTo(ta);
         case 'Oldest':
-          final ta = (da['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
-          final tb = (db['scannedAt'] as Timestamp?)?.toDate() ?? DateTime(0);
+          final ta = (da['scannedAt'] as Timestamp?)
+                  ?.toDate() ??
+              DateTime(0);
+          final tb = (db['scannedAt'] as Timestamp?)
+                  ?.toDate() ??
+              DateTime(0);
           return ta.compareTo(tb);
         case 'Largest':
-          // fileSize เก็บเป็น "34.20 KB" — แปลงตัวเลข
-          final sa = double.tryParse(
-                (da['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
-          final sb = double.tryParse(
-                (db['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
+          final sa = double.tryParse((da['fileSize'] ?? '0')
+                  .toString()
+                  .split(' ')
+                  .first) ??
+              0;
+          final sb = double.tryParse((db['fileSize'] ?? '0')
+                  .toString()
+                  .split(' ')
+                  .first) ??
+              0;
           return sb.compareTo(sa);
         case 'Smallest':
-          final sa = double.tryParse(
-                (da['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
-          final sb = double.tryParse(
-                (db['fileSize'] ?? '0').toString().split(' ').first) ?? 0;
+          final sa = double.tryParse((da['fileSize'] ?? '0')
+                  .toString()
+                  .split(' ')
+                  .first) ??
+              0;
+          final sb = double.tryParse((db['fileSize'] ?? '0')
+                  .toString()
+                  .split(' ')
+                  .first) ??
+              0;
           return sa.compareTo(sb);
         default:
           return 0;
@@ -95,6 +110,104 @@ class _HistoryPageState extends State<HistoryPage> {
     });
 
     return filtered;
+  }
+
+  // ─────────────────────────────────────────────
+  // ลบประวัติการสแกน
+  // 1. ลบ document ใน scanHistory
+  // 2. คำนวณ weeklyStats ใหม่สำหรับสัปดาห์นั้น
+  // ค่าเฉลี่ย dashboard จะอัปเดตเองผ่าน StreamBuilder
+  // ─────────────────────────────────────────────
+  Future<void> _handleDelete(
+    String docId,
+    String uid,
+    String fileName,
+    Timestamp? scannedAt,
+  ) async {
+    final confirmed = await _showDeleteConfirmDialog(fileName);
+    if (!confirmed) return;
+
+    try {
+      // เตรียม weekId ก่อนลบ
+      final weekId =
+          WeeklyStatsService.weekIdFromTimestamp(scannedAt);
+
+      // ลบจาก scanHistory
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('scanHistory')
+          .doc(docId)
+          .delete();
+
+      // คำนวณ weekly stats ใหม่สำหรับสัปดาห์ที่เกี่ยวข้อง
+      // ซึ่งจะอัปเดต dashboard average โดยอัตโนมัติ
+      await WeeklyStatsService.recalculate(uid, weekId);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$fileName removed from history.'),
+            backgroundColor: const Color(0xFF00FFB2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete: $e'),
+            backgroundColor: const Color(0xFFFF4B6C),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  // แสดง dialog สำหรับยืนยันการลบประวัติการสแกน
+  Future<bool> _showDeleteConfirmDialog(
+      String fileName) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF161B22),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_outline,
+                color: Color(0xFFFF4B6C)),
+            SizedBox(width: 8),
+            Text('Delete Scan',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(
+          'Delete $fileName from history?\n\nThis will also update your weekly security average.',
+          style: const TextStyle(
+              color: Colors.grey, fontSize: 13, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('CANCEL',
+                style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('DELETE',
+                style: TextStyle(
+                    color: Color(0xFFFF4B6C),
+                    fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
   }
 
   @override
@@ -106,43 +219,45 @@ class _HistoryPageState extends State<HistoryPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            padding:
+                EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             child: CustomHeader(),
           ),
 
-          // ── Header row ──
           Padding(
             padding: const EdgeInsets.symmetric(
                 horizontal: 20, vertical: 10),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              mainAxisAlignment:
+                  MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'History',
-                  style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white),
-                ),
+                const Text('History',
+                    style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white)),
                 ElevatedButton.icon(
-                  onPressed: () => _showFilterBottomSheet(context),
+                  onPressed: () =>
+                      _showFilterBottomSheet(context),
                   icon: const Icon(Icons.filter_list,
-                      size: 16, color: Color(0xFF00FFB2)),
+                      size: 16,
+                      color: Color(0xFF00FFB2)),
                   label: const Text('Filter',
-                      style: TextStyle(color: Color(0xFF00FFB2))),
+                      style: TextStyle(
+                          color: Color(0xFF00FFB2))),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor:
-                        const Color(0xFF00FFB2).withOpacity(0.1),
+                    backgroundColor: const Color(0xFF00FFB2)
+                        .withOpacity(0.1),
                     elevation: 0,
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
+                        borderRadius:
+                            BorderRadius.circular(12)),
                   ),
                 ),
               ],
             ),
           ),
 
-          // ── List ──
           Expanded(
             child: user == null
                 ? _buildGuestState()
@@ -151,7 +266,8 @@ class _HistoryPageState extends State<HistoryPage> {
                         .collection('users')
                         .doc(user.uid)
                         .collection('scanHistory')
-                        .orderBy('scannedAt', descending: true)
+                        .orderBy('scannedAt',
+                            descending: true)
                         .snapshots(),
                     builder: (context, snapshot) {
                       if (snapshot.connectionState ==
@@ -161,11 +277,12 @@ class _HistoryPageState extends State<HistoryPage> {
                               color: Color(0xFF00FFB2)),
                         );
                       }
-
                       if (snapshot.hasError) {
                         return const Center(
-                          child: Text('Error loading history.',
-                              style: TextStyle(color: Colors.grey)),
+                          child: Text(
+                              'Error loading history.',
+                              style: TextStyle(
+                                  color: Colors.grey)),
                         );
                       }
 
@@ -176,14 +293,15 @@ class _HistoryPageState extends State<HistoryPage> {
                         return _buildEmptyState();
                       }
 
-                      // นำการจัดเรียงและกรองไปใช้
-                      final filtered = _applyFilter(allDocs);
+                      final filtered =
+                          _applyFilter(allDocs);
 
                       if (filtered.isEmpty) {
                         return const Center(
                           child: Text(
                             'No files match your filter.',
-                            style: TextStyle(color: Colors.grey),
+                            style: TextStyle(
+                                color: Colors.grey),
                           ),
                         );
                       }
@@ -194,11 +312,17 @@ class _HistoryPageState extends State<HistoryPage> {
                         itemCount: filtered.length + 1,
                         itemBuilder: (context, index) {
                           if (index == filtered.length) {
-                            return const SizedBox(height: 80);
+                            return const SizedBox(
+                                height: 80);
                           }
-                          final data = filtered[index].data()
+                          final doc    = filtered[index];
+                          final data   = doc.data()
                               as Map<String, dynamic>;
-                          return _buildHistoryItem(data);
+                          return _buildHistoryItem(
+                            docId: doc.id,
+                            uid:   user.uid,
+                            data:  data,
+                          );
                         },
                       );
                     },
@@ -209,59 +333,20 @@ class _HistoryPageState extends State<HistoryPage> {
     );
   }
 
-  // ── Empty state ──
-  Widget _buildEmptyState() {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.history, color: Colors.grey, size: 48),
-          SizedBox(height: 16),
-          Text(
-            'No scans yet',
-            style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16),
-          ),
-          SizedBox(height: 8),
-          Text(
-            'Scan a file to see your history here.',
-            style: TextStyle(color: Colors.grey, fontSize: 13),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Guest state ──
-  Widget _buildGuestState() {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.lock_outline, color: Colors.grey, size: 48),
-          SizedBox(height: 16),
-          Text(
-            'Log in to see your history',
-            style: TextStyle(color: Colors.grey, fontSize: 14),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Single history item ──
-  Widget _buildHistoryItem(Map<String, dynamic> data) {
-    final String fileName  = data['fileName']  ?? 'Unknown File';
-    final String fileSize  = data['fileSize']  ?? '';
-    final int    score     = data['score']     ?? 0;
-    final String status    = data['status']    ?? 'Unknown';
-    final String fileType  = data['fileType']  ?? '';
+  Widget _buildHistoryItem({
+    required String docId,
+    required String uid,
+    required Map<String, dynamic> data,
+  }) {
+    final String fileName   = data['fileName']   ?? 'Unknown File';
+    final String fileSize   = data['fileSize']   ?? '';
+    final int    score      = data['score']      ?? 0;
+    final String status     = data['status']     ?? 'Unknown';
+    final String fileType   = data['fileType']   ?? '';
     final bool   isDeepScan = data['isDeepScan'] ?? false;
     final Timestamp? scannedAt = data['scannedAt'] as Timestamp?;
 
-    final color = _scoreColor(score);
+    final color    = _scoreColor(score);
     final subtitle =
         '${_formatDateTime(scannedAt)}  ·  $fileSize';
 
@@ -275,7 +360,7 @@ class _HistoryPageState extends State<HistoryPage> {
       ),
       child: Row(
         children: [
-          // ไอคอนไฟล์
+          // File icon
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -286,7 +371,7 @@ class _HistoryPageState extends State<HistoryPage> {
           ),
           const SizedBox(width: 16),
 
-          // ชื่อไฟล์ + วันที่
+          // File name + info
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -300,19 +385,17 @@ class _HistoryPageState extends State<HistoryPage> {
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                      color: Colors.grey, fontSize: 11),
-                ),
-                // แสดงแบดจ์ Deep scan
+                Text(subtitle,
+                    style: const TextStyle(
+                        color: Colors.grey, fontSize: 11)),
                 if (isDeepScan) ...[
                   const SizedBox(height: 4),
                   Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF00FFB2).withOpacity(0.1),
+                      color: const Color(0xFF00FFB2)
+                          .withOpacity(0.1),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: const Text(
@@ -328,33 +411,82 @@ class _HistoryPageState extends State<HistoryPage> {
             ),
           ),
 
-          // คะแนนและสถานะ
+          // Score + status
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(
-                score.toString(),
-                style: TextStyle(
-                    color: color,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold),
-              ),
-              Text(
-                status.toUpperCase(),
-                style: TextStyle(
-                    color: color.withOpacity(0.8),
-                    fontSize: 9,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.5),
-              ),
+              Text(score.toString(),
+                  style: TextStyle(
+                      color: color,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold)),
+              Text(status.toUpperCase(),
+                  style: TextStyle(
+                      color: color.withOpacity(0.8),
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5)),
             ],
+          ),
+
+          const SizedBox(width: 8),
+
+          // ── X delete button ──
+          GestureDetector(
+            onTap: () => _handleDelete(
+                docId, uid, fileName, scannedAt),
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Icon(Icons.close,
+                  size: 14, color: Colors.grey),
+            ),
           ),
         ],
       ),
     );
   }
 
-  // ── Filter bottom sheet ──
+  Widget _buildEmptyState() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.history, color: Colors.grey, size: 48),
+          SizedBox(height: 16),
+          Text('No scans yet',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16)),
+          SizedBox(height: 8),
+          Text('Scan a file to see your history here.',
+              style: TextStyle(
+                  color: Colors.grey, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGuestState() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.lock_outline,
+              color: Colors.grey, size: 48),
+          SizedBox(height: 16),
+          Text('Log in to see your history',
+              style:
+                  TextStyle(color: Colors.grey, fontSize: 14)),
+        ],
+      ),
+    );
+  }
+
   void _showFilterBottomSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -365,14 +497,16 @@ class _HistoryPageState extends State<HistoryPage> {
               BorderRadius.vertical(top: Radius.circular(24))),
       builder: (context) {
         return StatefulBuilder(
-          builder: (BuildContext context, StateSetter setModalState) {
+          builder:
+              (BuildContext context, StateSetter setModalState) {
             return SingleChildScrollView(
               child: Container(
                 padding: EdgeInsets.only(
                   top: 24,
                   left: 24,
                   right: 24,
-                  bottom: 24 + MediaQuery.of(context).padding.bottom,
+                  bottom:
+                      24 + MediaQuery.of(context).padding.bottom,
                 ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -384,21 +518,18 @@ class _HistoryPageState extends State<HistoryPage> {
                         height: 4,
                         decoration: BoxDecoration(
                           color: Colors.grey,
-                          borderRadius: BorderRadius.circular(2),
+                          borderRadius:
+                              BorderRadius.circular(2),
                         ),
                       ),
                     ),
                     const SizedBox(height: 20),
-                    const Text(
-                      'Sort & Filter',
-                      style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white),
-                    ),
+                    const Text('Sort & Filter',
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white)),
                     const SizedBox(height: 24),
-
-                    // จัดเรียงตาม
                     const Text('Sort By',
                         style: TextStyle(
                             color: Colors.grey,
@@ -416,8 +547,6 @@ class _HistoryPageState extends State<HistoryPage> {
                       ],
                     ),
                     const SizedBox(height: 24),
-
-                    // กรองตามสถานะ
                     const Text('Filter By Status',
                         style: TextStyle(
                             color: Colors.grey,
@@ -435,16 +564,16 @@ class _HistoryPageState extends State<HistoryPage> {
                       ],
                     ),
                     const SizedBox(height: 32),
-
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
                         onPressed: () {
-                          setState(() {}); // เรียกให้แสดงผลใหม่เมื่อกรองเปลี่ยน
+                          setState(() {});
                           Navigator.pop(context);
                         },
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF00FFB2),
+                          backgroundColor:
+                              const Color(0xFF00FFB2),
                           foregroundColor: Colors.black,
                           padding: const EdgeInsets.symmetric(
                               vertical: 16),
@@ -474,7 +603,7 @@ class _HistoryPageState extends State<HistoryPage> {
     Function(String) onSelected, {
     Color? activeColor,
   }) {
-    final bool isSelected = label == selectedValue;
+    final bool  isSelected = label == selectedValue;
     final Color color = activeColor ?? const Color(0xFF00FFB2);
     return ChoiceChip(
       label: Text(label),
@@ -486,8 +615,9 @@ class _HistoryPageState extends State<HistoryPage> {
       backgroundColor: const Color(0xFF161B22),
       labelStyle: TextStyle(
         color: isSelected ? color : Colors.grey,
-        fontWeight:
-            isSelected ? FontWeight.bold : FontWeight.normal,
+        fontWeight: isSelected
+            ? FontWeight.bold
+            : FontWeight.normal,
       ),
       side: BorderSide(
           color: isSelected ? color : Colors.transparent),
