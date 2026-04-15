@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/widgets/custom_header.dart';
+import '../../core/services/weekly_stats_service.dart';
 
 class StrongBoxPage extends StatefulWidget {
   const StrongBoxPage({super.key});
@@ -15,11 +16,9 @@ class StrongBoxPage extends StatefulWidget {
 
 class _StrongBoxPageState extends State<StrongBoxPage> {
 
-  // ── ติดตามเอกสารที่กำลังประมวลผลอยู่ ──
-  // เพื่อแสดงตัวหมุนโหลดเฉพาะรายการนั้น
   final Set<String> _loadingDocs = {};
 
-  // ── สร้าง SHA-256 จากเส้นทางไฟล์ ──
+  // สร้าง SHA-256 hash ของไฟล์จากไฟล์ในเครื่อง
   String? _generateHash(String filePath) {
     try {
       final bytes = File(filePath).readAsBytesSync();
@@ -29,14 +28,14 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     }
   }
 
-  // ── คะแนน → สี ──
+  // เลือกสีตาม score เพื่อแสดงสถานะความปลอดภัย
   Color _scoreColor(int score) {
     if (score >= 80) return const Color(0xFF00FFB2);
     if (score >= 50) return Colors.amber;
     return const Color(0xFFFF4B6C);
   }
 
-  // ── ประเภทไฟล์ → ไอคอน ──
+  // คืน Icon ตามนามสกุลไฟล์
   IconData _fileIcon(String fileName) {
     final ext = fileName.contains('.')
         ? fileName.split('.').last.toLowerCase()
@@ -60,7 +59,7 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     }
   }
 
-  // ── แปลง Timestamp เป็นข้อความ ──
+  // แปลง Timestamp เป็นวันที่แบบอ่านง่าย
   String _formatDate(Timestamp? timestamp) {
     if (timestamp == null) return 'Never';
     final d = timestamp.toDate();
@@ -72,49 +71,31 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
   }
 
   // ─────────────────────────────────────────────
-  // ย้ายไฟล์
-  // ให้ผู้ใช้เลือกไฟล์ใหม่ → อัปเดต filePath
-  // ใน Firestore → สร้าง hash ใหม่จากเส้นทางใหม่
+  // ย้ายตำแหน่งไฟล์ — อัปเดตเฉพาะ filePath เท่านั้น ไม่รีเซ็ต hash
   // ─────────────────────────────────────────────
   Future<void> _handleRelocate(
     String docId,
     String uid,
     String fileName,
   ) async {
-    // เปิดตัวเลือกไฟล์
     final result = await FilePicker.platform.pickFiles(
       withData: false,
       withReadStream: false,
     );
 
-    if (result == null) return; // ผู้ใช้ยกเลิก
+    if (result == null) return;
     final file = result.files.first;
     if (file.path == null) return;
 
     setState(() => _loadingDocs.add(docId));
 
     try {
-      // สร้าง hash ใหม่จากไฟล์ที่เลือกมา
-      final newHash = _generateHash(file.path!);
-
-      if (newHash == null) {
-        _showSnackbar('Could not read selected file.', isError: true);
-        return;
-      }
-
-      // อัปเดต Firestore ด้วยเส้นทางและ hash ใหม่
       await FirebaseFirestore.instance
           .collection('users')
           .doc(uid)
           .collection('strongBox')
           .doc(docId)
-          .update({
-        'filePath':     file.path,
-        'fileHash':     newHash,   // รีเซ็ต hash เป็นของไฟล์ใหม่
-        'lastVerified': FieldValue.serverTimestamp(),
-        // ล้างเตือน "hash changed" เพราะผู้ใช้ยืนยันไฟล์ใหม่
-        'hashChanged':  false,
-      });
+          .update({'filePath': file.path});
 
       _showSnackbar('File location updated successfully.');
     } catch (e) {
@@ -125,11 +106,14 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
   }
 
   // ─────────────────────────────────────────────
-  // ตรวจสอบอีกครั้ง
-  // สร้าง SHA-256 จาก filePath ที่บันทึกไว้
-  // เปรียบเทียบกับ fileHash ที่เก็บไว้
-  // ถ้าเปลี่ยน → เตือนผู้ใช้และลดคะแนน 30
-  // ถ้าไม่พบไฟล์ → ให้ย้ายไฟล์ใหม่
+  // ยืนยัน hash อีกครั้ง
+  // ถ้า hash เปลี่ยน:
+  //   → อัปเดต score ใน StrongBox
+  //   → อัปเดต matching history score
+  //   → คำนวณ weekly stats ใหม่
+  //   → เขียน in-app notification
+  // ถ้า hash เหมือนเดิม:
+  //   → เขียน in-app notification ว่า verified OK
   // ─────────────────────────────────────────────
   Future<void> _handleReVerify(
     String docId,
@@ -142,53 +126,100 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     setState(() => _loadingDocs.add(docId));
 
     try {
-      // ── ตรวจสอบว่าไฟล์ยังอยู่ตามเส้นทางที่บันทึกไว้ ──
       if (filePath.isEmpty || !File(filePath).existsSync()) {
         _showFileNotFoundDialog(fileName);
         return;
       }
 
-      // ── สร้าง hash ปัจจุบัน ──
       final currentHash = _generateHash(filePath);
       if (currentHash == null) {
         _showSnackbar('Could not read file.', isError: true);
         return;
       }
 
-      // ── เปรียบเทียบ hash ──
+      final userDoc = FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid);
+
       if (currentHash == savedHash) {
-        // hash ไม่เปลี่ยน — ไฟล์ยังคงครบถ้วน
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
+        // ── Hash ไม่เปลี่ยน ──
+        await userDoc
             .collection('strongBox')
             .doc(docId)
             .update({
           'lastVerified': FieldValue.serverTimestamp(),
           'hashChanged':  false,
         });
-        _showSnackbar('$fileName is unchanged. File integrity verified ✓');
+
+        // สร้าง notification ในแอป — ไฟล์ยังปกติ
+        await userDoc.collection('notifications').add({
+          'title':     '✅ File Integrity Verified',
+          'message':   '$fileName is unchanged. Hash matches original.',
+          'type':      'scan',
+          'isRead':    false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        _showSnackbar(
+            '$fileName is unchanged. File integrity verified ✓');
       } else {
-        // hash เปลี่ยน — ไฟล์ถูกแก้ไข
-        // ลดคะแนน 30 จุด (ต่ำสุด 0)
-        final newScore = (currentScore - 30).clamp(0, 100);
+        // ── Hash เปลี่ยน ──
+        final newScore  = (currentScore - 30).clamp(0, 100);
         final newStatus = newScore >= 80
             ? 'Safe'
             : newScore >= 50
                 ? 'Warning'
                 : 'Threat';
 
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
+        // อัปเดต StrongBox
+        await userDoc
             .collection('strongBox')
             .doc(docId)
             .update({
-          'fileHash':     currentHash, // อัปเดตเป็น hash ล่าสุด
+          'fileHash':     currentHash,
           'score':        newScore,
           'status':       newStatus,
           'lastVerified': FieldValue.serverTimestamp(),
-          'hashChanged':  true,        // ธงเตือนใน UI
+          'hashChanged':  true,
+        });
+
+        // ── หาและอัปเดต history entry ที่ตรงกัน ──
+        final historySnap = await userDoc
+            .collection('scanHistory')
+            .where('fileName', isEqualTo: fileName)
+            .where('fileHash', isEqualTo: savedHash)
+            .limit(1)
+            .get();
+
+        if (historySnap.docs.isNotEmpty) {
+          final historyDoc  = historySnap.docs.first;
+          final historyData = historyDoc.data();
+
+          // หาสัปดาห์ของการสแกนนี้
+          final Timestamp? scannedAt =
+              historyData['scannedAt'] as Timestamp?;
+          final weekId =
+              WeeklyStatsService.weekIdFromTimestamp(
+                  scannedAt);
+
+          // อัปเดต score ใน history
+          await historyDoc.reference.update({
+            'score':  newScore,
+            'status': newStatus,
+          });
+
+          // คำนวณ average ของสัปดาห์นั้นใหม่
+          await WeeklyStatsService.recalculate(
+              uid, weekId);
+        }
+
+        // สร้าง notification ในแอป — ไฟล์ถูกแก้ไข
+        await userDoc.collection('notifications').add({
+          'title':   '⚠️ File Modification Detected!',
+          'message': '$fileName SHA-256 hash changed. Score: $currentScore → $newScore.',
+          'type':    'threat',
+          'isRead':  false,
+          'createdAt': FieldValue.serverTimestamp(),
         });
 
         _showHashChangedDialog(fileName, currentScore, newScore);
@@ -200,7 +231,75 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     }
   }
 
-  // ── กล่องโต้ตอบ: ไม่พบไฟล์ ──
+  // ─────────────────────────────────────────────
+  // ลบจาก StrongBox
+  // ลบเฉพาะ record ใน StrongBox เท่านั้น
+  // ประวัติ scan และ weekly stats จะไม่ถูกกระทบ
+  // ─────────────────────────────────────────────
+  Future<void> _handleDelete(
+    String docId,
+    String uid,
+    String fileName,
+  ) async {
+    final confirmed = await _showDeleteConfirmDialog(fileName);
+    if (!confirmed) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('strongBox')
+          .doc(docId)
+          .delete();
+
+      _showSnackbar('$fileName removed from StrongBox.');
+    } catch (e) {
+      _showSnackbar('Failed to remove: $e', isError: true);
+    }
+  }
+
+  Future<bool> _showDeleteConfirmDialog(String fileName) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF161B22),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_outline,
+                color: Color(0xFFFF4B6C)),
+            SizedBox(width: 8),
+            Text('Remove File',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(
+          'Remove $fileName from StrongBox?\n\nThis will not delete the file itself or its scan history.',
+          style: const TextStyle(
+              color: Colors.grey, fontSize: 13, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('CANCEL',
+                style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('REMOVE',
+                style: TextStyle(
+                    color: Color(0xFFFF4B6C),
+                    fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
   void _showFileNotFoundDialog(String fileName) {
     showDialog(
       context: context,
@@ -236,7 +335,6 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     );
   }
 
-  // ── กล่องโต้ตอบ: เตือน hash เปลี่ยน ──
   void _showHashChangedDialog(
       String fileName, int oldScore, int newScore) {
     showDialog(
@@ -257,7 +355,7 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
           ],
         ),
         content: Text(
-          '$fileName has been modified since it was last saved.\n\nThe file\'s SHA-256 hash no longer matches the original.\n\nScore reduced from $oldScore → $newScore.',
+          '$fileName has been modified since it was last saved.\n\nThe SHA-256 hash no longer matches the original.\n\nScore reduced: $oldScore → $newScore.\nScan history and weekly average updated.',
           style: const TextStyle(
               color: Colors.grey, fontSize: 13, height: 1.5),
         ),
@@ -284,9 +382,6 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // BUILD
-  // ─────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -296,16 +391,14 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Padding(
-            padding:
-                EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            padding: EdgeInsets.symmetric(
+                horizontal: 20, vertical: 10),
             child: CustomHeader(),
           ),
 
-          // ── สถานะผู้เยี่ยมชม ──
           if (user == null)
             Expanded(child: _buildGuestState())
           else
-            // ── ข้อมูลจริงจาก Firestore ──
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
                 stream: FirebaseFirestore.instance
@@ -325,7 +418,6 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
 
                   final docs = snapshot.data?.docs ?? [];
 
-                  // Count safe vs alert
                   int safeCount  = 0;
                   int alertCount = 0;
                   for (final doc in docs) {
@@ -341,20 +433,22 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                   }
 
                   return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
                     children: [
-                      // ── บัตรสรุป ──
                       Container(
                         margin: const EdgeInsets.all(20),
                         padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
                           color: const Color(0xFF131F1D),
-                          borderRadius: BorderRadius.circular(24),
+                          borderRadius:
+                              BorderRadius.circular(24),
                         ),
                         child: Row(
                           children: [
                             Container(
-                              padding: const EdgeInsets.all(12),
+                              padding:
+                                  const EdgeInsets.all(12),
                               decoration: BoxDecoration(
                                 color: const Color(0xFF00FFB2)
                                     .withOpacity(0.1),
@@ -377,20 +471,20 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                                           fontSize: 16,
                                           fontWeight:
                                               FontWeight.bold,
-                                          color: Colors.white)),
-                                  Text('Keep your files safe',
+                                          color:
+                                              Colors.white)),
+                                  Text(
+                                      'Keep your files safe',
                                       style: TextStyle(
                                           fontSize: 12,
                                           color: Colors.grey)),
                                 ],
                               ),
                             ),
-                            // แสดงจำนวนปลอดภัย
                             _buildBadge(
                                 safeCount.toString(),
                                 const Color(0xFF00FFB2)),
                             const SizedBox(width: 8),
-                            // แสดงจำนวนเตือน
                             _buildBadge(
                                 alertCount.toString(),
                                 const Color(0xFFFF4B6C)),
@@ -398,7 +492,6 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                         ),
                       ),
 
-                      // ── หัวข้อรายการ ──
                       const Padding(
                         padding: EdgeInsets.symmetric(
                             horizontal: 20),
@@ -412,7 +505,6 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                       ),
                       const SizedBox(height: 10),
 
-                      // ── รายการไฟล์ ──
                       Expanded(
                         child: docs.isEmpty
                             ? _buildEmptyState()
@@ -421,7 +513,8 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                                     const EdgeInsets.symmetric(
                                         horizontal: 20),
                                 itemCount: docs.length + 1,
-                                itemBuilder: (context, index) {
+                                itemBuilder:
+                                    (context, index) {
                                   if (index == docs.length) {
                                     return const SizedBox(
                                         height: 80);
@@ -430,9 +523,9 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                                   final data = doc.data()
                                       as Map<String, dynamic>;
                                   return _buildStoredFile(
-                                    docId:   doc.id,
-                                    uid:     user.uid,
-                                    data:    data,
+                                    docId: doc.id,
+                                    uid:   user.uid,
+                                    data:  data,
                                   );
                                 },
                               ),
@@ -447,9 +540,6 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // การ์ดไฟล์เดี่ยว
-  // ─────────────────────────────────────────────
   Widget _buildStoredFile({
     required String docId,
     required String uid,
@@ -465,13 +555,11 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     final Timestamp? savedAt      = data['savedAt']      as Timestamp?;
     final Timestamp? lastVerified = data['lastVerified'] as Timestamp?;
 
-    // ถ้า hash เปลี่ยน ให้ถือเป็นเตือนเสมอ
-    final bool isAlert = status == 'Threat' || hashChanged;
-    final Color color  = hashChanged
+    final bool  isAlert  = status == 'Threat' || hashChanged;
+    final Color color    = hashChanged
         ? const Color(0xFFFF4B6C)
         : _scoreColor(score);
-
-    final bool isLoading = _loadingDocs.contains(docId);
+    final bool  isLoading = _loadingDocs.contains(docId);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -487,14 +575,14 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── แถวข้อมูลไฟล์ ──
           Row(
             children: [
               Icon(_fileIcon(fileName), color: color, size: 22),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment:
+                      CrossAxisAlignment.start,
                   children: [
                     Text(
                       fileName,
@@ -503,16 +591,15 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                           color: Colors.white),
                       overflow: TextOverflow.ellipsis,
                     ),
-                    Text(
-                      fileSize,
-                      style: const TextStyle(
-                          color: Colors.grey, fontSize: 11),
-                    ),
+                    Text(fileSize,
+                        style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 11)),
                   ],
                 ),
               ),
 
-              // ── แสดงสถานะ ──
+              // Status badge
               Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 10, vertical: 4),
@@ -541,18 +628,34 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                   ],
                 ),
               ),
+
+              const SizedBox(width: 8),
+
+              // ── X delete button ──
+              GestureDetector(
+                onTap: () =>
+                    _handleDelete(docId, uid, fileName),
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.close,
+                      size: 14, color: Colors.grey),
+                ),
+              ),
             ],
           ),
 
-          // ── แบนเนอร์เตือน hash เปลี่ยน ──
           if (hashChanged) ...[
             const SizedBox(height: 10),
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color:
-                    const Color(0xFFFF4B6C).withOpacity(0.08),
+                color: const Color(0xFFFF4B6C)
+                    .withOpacity(0.08),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
                     color: const Color(0xFFFF4B6C)
@@ -577,11 +680,9 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
             ),
           ],
 
-          // ── แถวคะแนนและวันที่ ──
           const SizedBox(height: 10),
           Row(
             children: [
-              // แสดงคะแนน
               Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 8, vertical: 3),
@@ -611,37 +712,33 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
 
           const SizedBox(height: 12),
 
-          // ── ปุ่มคำสั่ง ──
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              // ปุ่มย้ายไฟล์
               OutlinedButton.icon(
                 onPressed: isLoading
                     ? null
                     : () => _handleRelocate(
-                          docId, uid, fileName),
+                        docId, uid, fileName),
                 icon: const Icon(
                     Icons.folder_copy_outlined,
                     size: 14,
                     color: Colors.grey),
-                label: const Text(
-                  'Relocate',
-                  style: TextStyle(
-                      color: Colors.grey, fontSize: 12),
-                ),
+                label: const Text('Relocate',
+                    style: TextStyle(
+                        color: Colors.grey, fontSize: 12)),
                 style: OutlinedButton.styleFrom(
                   side: const BorderSide(
                       color: Colors.grey, width: 0.5),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 12, vertical: 8),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
+                      borderRadius:
+                          BorderRadius.circular(10)),
                 ),
               ),
               const SizedBox(width: 8),
 
-              // ปุ่มตรวจสอบอีกครั้ง
               OutlinedButton.icon(
                 onPressed: isLoading
                     ? null
@@ -658,16 +755,14 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                         width: 12,
                         height: 12,
                         child: CircularProgressIndicator(
-                          color: color,
-                          strokeWidth: 2,
-                        ),
+                            color: color, strokeWidth: 2),
                       )
                     : Icon(Icons.refresh,
                         size: 14, color: color),
                 label: Text(
                   isLoading ? 'Checking...' : 'Re-verify',
-                  style: TextStyle(
-                      color: color, fontSize: 12),
+                  style:
+                      TextStyle(color: color, fontSize: 12),
                 ),
                 style: OutlinedButton.styleFrom(
                   side: BorderSide(
@@ -675,7 +770,8 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
                   padding: const EdgeInsets.symmetric(
                       horizontal: 12, vertical: 8),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
+                      borderRadius:
+                          BorderRadius.circular(10)),
                 ),
               ),
             ],
@@ -685,7 +781,6 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     );
   }
 
-  // ── วิดเจ็ตแบดจ์สำหรับบัตรสรุป ──
   Widget _buildBadge(String text, Color color) {
     return Container(
       padding: const EdgeInsets.symmetric(
@@ -694,17 +789,14 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
         color: const Color(0xFF161B22),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Text(
-        text,
-        style: TextStyle(
-            color: color,
-            fontWeight: FontWeight.bold,
-            fontSize: 18),
-      ),
+      child: Text(text,
+          style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.bold,
+              fontSize: 18)),
     );
   }
 
-  // ── สถานะว่าง ──
   Widget _buildEmptyState() {
     return const Center(
       child: Column(
@@ -713,13 +805,11 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
           Icon(Icons.lock_open_outlined,
               color: Colors.grey, size: 48),
           SizedBox(height: 16),
-          Text(
-            'StrongBox is empty',
-            style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16),
-          ),
+          Text('StrongBox is empty',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16)),
           SizedBox(height: 8),
           Text(
             'Save a scanned file to monitor\nits integrity over time.',
@@ -732,19 +822,17 @@ class _StrongBoxPageState extends State<StrongBoxPage> {
     );
   }
 
-  // ── สถานะผู้เยี่ยมชม ──
   Widget _buildGuestState() {
     return const Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.lock_outline, color: Colors.grey, size: 48),
+          Icon(Icons.lock_outline,
+              color: Colors.grey, size: 48),
           SizedBox(height: 16),
-          Text(
-            'Log in to use StrongBox',
-            style:
-                TextStyle(color: Colors.grey, fontSize: 14),
-          ),
+          Text('Log in to use StrongBox',
+              style:
+                  TextStyle(color: Colors.grey, fontSize: 14)),
         ],
       ),
     );
