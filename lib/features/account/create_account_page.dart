@@ -31,6 +31,17 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
     _emailController.addListener(() => setState(() {}));
     _passwordController.addListener(() => setState(() {}));
     _confirmPasswordController.addListener(() => setState(() {}));
+
+    // ── NEW: รีไดเร็กต์ผู้ใช้ที่ล็อกอินแล้วให้ออกจากหน้า signup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (FirebaseAuth.instance.currentUser != null) {
+        Navigator.pushNamedAndRemoveUntil(
+          context,
+          AppRoutes.main,
+          (route) => false,
+        );
+      }
+    });
   }
 
   @override
@@ -393,12 +404,23 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
               'username': _userNameController.text.trim(),
               'email': _emailController.text.trim(),
               'isPro': false, 
+              'planName': 'Free Plan',
               'createdAt': FieldValue.serverTimestamp(),
             });
 
-            // 3. นำทางไปยังหน้า Subscription เมื่อสำเร็จ
+            // ── นำทางไปยัง subscription page หลังจากสมัครสำเร็จ
+            // และสร้าง main route ไว้ใน stack ก่อน เพื่อให้ back กลับไปยัง home ได้ปกติ
             if (context.mounted) {
-              Navigator.pushNamed(context, AppRoutes.subscription);
+              Navigator.pushNamedAndRemoveUntil(
+                context,
+                AppRoutes.main,
+                (route) => false,
+              );
+              Navigator.pushNamed(
+                context,
+                AppRoutes.subscription,
+                arguments: {'fromSignup': true},
+              );
             }
 
           } on FirebaseAuthException catch (e) {

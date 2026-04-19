@@ -37,10 +37,26 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
 
   @override
   Widget build(BuildContext context) {
+    final routeArgs = ModalRoute.of(context)?.settings.arguments;
+    final bool fromSignup = routeArgs is Map && routeArgs['fromSignup'] == true;
+
     // สร้างเลย์เอาต์หลักของหน้า subscription
-    return Scaffold(
-      backgroundColor: const Color(0xFF080B0E),
-      body: Stack(
+    return WillPopScope(
+      onWillPop: () async {
+        if (fromSignup) {
+          Navigator.pushNamedAndRemoveUntil(
+            context,
+            AppRoutes.main,
+            (route) => false,
+          );
+          return false;
+        }
+
+        return true;
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF080B0E),
+        body: Stack(
         children: [
           // เอฟเฟกต์เรืองแสงพื้นหลัง
           Positioned(
@@ -70,7 +86,17 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
                 children: [
                   // ปุ่มย้อนกลับ
                   GestureDetector(
-                    onTap: () => Navigator.pop(context),
+                    onTap: () {
+                      if (fromSignup) {
+                        Navigator.pushNamedAndRemoveUntil(
+                          context,
+                          AppRoutes.main,
+                          (route) => false,
+                        );
+                      } else {
+                        Navigator.pop(context);
+                      }
+                    },
                     child: Container(
                       width: 44,
                       height: 44,
@@ -301,6 +327,7 @@ class _SubscriptionPageState extends State<SubscriptionPage> {
           ),
         ],
       ),
+      )
     );
   }
 

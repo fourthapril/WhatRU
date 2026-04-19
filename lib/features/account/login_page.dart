@@ -15,6 +15,21 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _emailController    = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
+  // ── NEW: รีไดเร็กต์ผู้ใช้ที่ล็อกอินแล้วออกจากหน้า login page ──
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (FirebaseAuth.instance.currentUser != null) {
+        Navigator.pushNamedAndRemoveUntil(
+          context,
+          AppRoutes.main,
+          (route) => false,
+        );
+      }
+    });
+  }
+
   @override
   void dispose() {
     _emailController.dispose();
